@@ -1,0 +1,84 @@
+name: Build for Windows ARM64
+
+on:
+  push:
+    tags:
+    - '*'
+
+jobs:
+  build-windows-arm64:
+    name: Build
+    runs-on: windows-latest
+    env:
+      qt_path: "${{ github.workspace }}/qt-msvc-arm64"
+      qt_version: "5.15.10"
+      jom_version: "1.1.3"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup devcmd
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
+
+      - name: Install build tools
+        run: |
+          choco install jom ninja
+
+      - name: Install Qt (host x64)
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: "5.15.2"
+          archives: 'qtbase qttools'
+          set-env: 'false'
+          dir: 'C:'
+
+      - name: Install Qt (target arm64)
+        run: |
+          git clone https://github.com/qt/qt5.git qt5
+          cd qt5
+          git checkout "v${{ env.qt_version }}-lts-lgpl"
+          perl init-repository --module-subset=qtbase
+          cd qtbase
+          git apply ${{ github.workspace }}/0001-fix-qt5-arm64-build.patch
+          cd ..
+          ./configure -opensource -confirm-license -nomake tests -nomake examples `
+             -schannel -static -static-runtime -release -platform win32-msvc -xplatform win32-arm64-msvc2017 `
+            -prefix "${{ env.qt_path }}" -external-hostbindir "C:/Qt/5.15.2/msvc2019_64/bin" 
+          jom
+          jom install
+
+      - name: Build Jom
+        run: |
+          git clone --branch v${{ env.jom_version }} --depth 1 https://github.com/qt-labs/jom.git 
+          cd jom
+          mkdir build
+          cd build
+          echo "${{ github.workspace }}/win64-arm-toolchain.cmake"
+          cmake -G "Ninja" -DCMAKE_PREFIX_PATH="${{ env.qt_path }}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/win64-arm-toolchain.cmake" ..
+          cmake --build .
+
+      - name: Prepare build artifacts
+        run: |
+          mkdir upload
+          cd upload
+          cp ${{ github.workspace }}/jom/build/bin/jom.exe .
+          cp ${{ github.workspace }}/jom/changelog.txt .
+          cp ${{ github.workspace }}/jom/bin/* .
+          7z a jom_${{ env.jom_version }}_arm64.zip *
+          mv jom_${{ env.jom_version }}_arm64.zip ..
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: jom_${{ env.jom_version }}
+          path: upload
+
+      - name: Batch release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: jom_${{ env.jom_version }}_arm64.zip
